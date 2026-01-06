@@ -25,7 +25,17 @@ pio.renderers.default='browser'
 
 path_data_colectivos = "./../data/colectivos-gtfs/"
 
+# Archivos originales
 stops_completo = pd.read_table(path_data_colectivos+"stops.txt", sep=',')
+stop_times     = pd.read_table(path_data_colectivos+"stop_times.txt", sep=',')
+trips          = pd.read_table(path_data_colectivos+"trips.txt", sep=',')
+
+
+
+# Archivos generados en este código
+stops_reducido = pd.read_pickle('stops_reducido.pkl')
+conectividad_reducido = load_npz("matriz_distancia_reducida.npz")
+dist_reducido = load_npz("matriz_distancia_reducida.npz")
 
 # %% Plots
 
@@ -233,7 +243,6 @@ while True:
     if not cambio:
         break
 
-stops_reducido.to_csv('stops_reducido.csv')
 save_npz("matriz_distancia_reducida.npz", dist_reducido)
 
 
@@ -247,21 +256,101 @@ save_npz("conectividad_reducido.npz", conectividad_reducido)
 
 
 # %% Clustering Reducido
+# conectividad_reducido = load_npz("matriz_distancia_reducida.npz")
+# dist_reducido = load_npz("matriz_distancia_reducida.npz")
 
-conectividad_reducido = load_npz("matriz_distancia_reducida.npz")
-dist_reducido = load_npz("matriz_distancia_reducida.npz")
-
+dist_expanded = dist_reducido.toarray()
+dist_expanded[dist_expanded==0] = 1e10
 
 clustering = AgglomerativeClustering(
                 n_clusters=None,
-                distance_threshold=500, 
+                distance_threshold=800,
                 metric='precomputed',
                 connectivity=conectividad_reducido,
-                linkage='complete'
-            ).fit(dist_reducido.toarray())
+                linkage='complete',
+                compute_full_tree=True
+            ).fit(dist_expanded)
+
+# %%
+
+stops_reducido["cluster"] = clustering.labels_
+stops_reducido["members"] = stops_reducido["members"].apply(
+    lambda x: [int(m) for m in x]
+)
+stops_reducido.to_pickle('stops_reducido.pkl')
 
 
 fig = px.scatter_map(stops_reducido, lat="stop_lat", lon="stop_lon", zoom=10,
-                     color=clustering.labels_)
+                     color="cluster")
 fig.show()
+
+# %%
+stops_reducido = pd.read_pickle('stops_reducido.pkl')
+
+cluster_to_stops = (
+    stops_reducido
+    .groupby("cluster")["members"]
+    .apply(lambda x: list(set().union(*[set(lst) for lst in x])))
+)
+
+# %%
+
+route_of_trip = trips[['trip_id', 'route_id']]
+route_of_trip_dict = dict(route_of_trip.values)
+stop_times[['trip_id', 'stop_id']]
+
+routes_per_stop = (
+    stop_times[['trip_id', 'stop_id']]
+    .groupby("stop_id")["trip_id"]
+    .apply(lambda x: list(set(route_of_trip_dict[tid] for tid in x)))
+)
+
+# %%
+cluster_to_routes = cluster_to_stops.apply(
+    lambda stops: list(set(
+        route 
+        for stop_id in stops 
+        for route in routes_per_stop.get(stop_id, [])
+    ))
+)
+
+cant_routes_per_cluster = [len(x) for x in cluster_to_routes]
+
+cluster_centroides = (
+    stops_reducido
+    .groupby('cluster')
+    .agg({
+        'stop_lat': 'mean',
+        'stop_lon': 'mean'
+    })
+    .rename(columns={'stop_lat': 'centroid_lat', 'stop_lon': 'centroid_lon'})   
+)
+
+fig = px.scatter_map(cluster_centroides, lat="centroid_lat", lon="centroid_lon",
+                     zoom=10, color=cant_routes_per_cluster,
+                     size=cant_routes_per_cluster, hover_name=cluster_centroides.index)
+fig.show()
+
+# %% Cluster 76 - Anómalo
+
+paradas_cluster_76 = stops_completo[stops_completo['stop_id'].isin(cluster_to_stops[76])]
+
+fig = px.scatter_map(paradas_cluster_76 , lat="stop_lat", lon="stop_lon",
+                     zoom=10)
+fig.show()
+
+# %%
+
+fig = px.scatter_map(stops_reducido, lat="stop_lat", lon="stop_lon",
+                     zoom=10)
+fig.show()
+
+for i, grupo in stops_reducido.iterrows(): 
+    for m in grupo["members"]:
+        if m in cluster_to_stops[76]:
+            print(grupo)
+
+
+paradas_cluster_76_reducido = stops_reducido[stops_reducido['members'].any().isin(cluster_to_stops[76])]
+
 
