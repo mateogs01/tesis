@@ -27,6 +27,44 @@ path_data_colectivos = "./../data/colectivos-gtfs/"
 
 stops_completo = pd.read_table(path_data_colectivos+"stops.txt", sep=',')
 
+# %% Plots
+
+def grafo_de_conectividad(stops, conectividad):
+    """
+    Plotea todas las paradas y todas las aristas de la conectividad
+    """
+    coo = conectividad.tocoo()
+    lats = []
+    lons = []
+
+    for i, j in zip(coo.row, coo.col):
+        if i >= j:
+            continue
+
+        lats.extend([
+            stops.loc[i, "stop_lat"],
+            stops.loc[j, "stop_lat"],
+            None
+        ])
+        lons.extend([
+            stops.loc[i, "stop_lon"],
+            stops.loc[j, "stop_lon"],
+            None
+        ])
+
+    fig = px.scatter_map(stops, lat="stop_lat", lon="stop_lon", zoom=10)
+    fig.add_trace(
+        go.Scattermap(
+            lat=lats,
+            lon=lons,
+            mode="lines",
+            line=dict(width=1, color="rgba(0,0,0,0.3)"),
+            name="conectividad"
+        )
+    )
+    fig.show()
+
+
 
 # %% Matriz de distancias
 
@@ -93,6 +131,8 @@ conectividad_completo = radius_neighbors_graph(
     stops_completo[['stop_lat', 'stop_lon']], radius=.01, mode='connectivity',
     include_self=False, n_jobs=10)
 
+save_npz("conectividad_completo.npz", conectividad_completo)
+
 dist_matrix_completo = calcular_matriz_distancia(
                             stops_completo, conectividad_completo,
                             "matriz_distancia_completo.npz")
@@ -100,7 +140,8 @@ dist_matrix_completo = calcular_matriz_distancia(
 # %%
 """
 Reduzco la matriz de distancias uniendo todas las paradas que están a menos de
-50 metros 2 a 2 y tomando la posicion promedio
+50 metros 2 a 2 y tomando una de las dos posiciones (es más rápido que tomar 
+el centroide porque no hay que recalcular distancias)
 """
 def reducir_stops(stops, dist_sparse, umbral=50):
     coo = dist_sparse.tocoo()
@@ -122,17 +163,22 @@ def reducir_stops(stops, dist_sparse, umbral=50):
         return stops, dist_sparse, False
     
     
+    # --- construir nuevos nodos ---
     new_rows = []
     old_to_new = {}
+    representative = {}
     new_id = 0
 
     for i, j in pairs:
+        rep = i
         new_rows.append({
-            "stop_lat": (stops.loc[i, "stop_lat"] + stops.loc[j, "stop_lat"]) / 2,
-            "stop_lon": (stops.loc[i, "stop_lon"] + stops.loc[j, "stop_lon"]) / 2,
+            "stop_lat": stops.loc[rep, "stop_lat"],
+            "stop_lon": stops.loc[rep, "stop_lon"],
             "members": stops.loc[i, "members"] + stops.loc[j, "members"]
         })
         old_to_new[i] = old_to_new[j] = new_id
+        representative[i] = rep
+        representative[j] = rep
         new_id += 1
     
     
@@ -140,42 +186,34 @@ def reducir_stops(stops, dist_sparse, umbral=50):
         if i not in used:
             new_rows.append(stops.loc[i].to_dict())
             old_to_new[i] = new_id
+            representative[i] = i
             new_id += 1
-    
     
     stops_nuevo = pd.DataFrame(new_rows).reset_index(drop=True)
     
-    nuevos = set(old_to_new[i] for i in used)
-    
+    # --- reconstruir matriz ---
     rows, cols, data = [], [], []
-    
-    for i, j, d_old in zip(coo.row, coo.col, coo.data):
+
+    for i, j, d in zip(coo.row, coo.col, coo.data):
         if i >= j:
             continue
-    
+
         ni, nj = old_to_new[i], old_to_new[j]
         if ni == nj:
             continue
-    
-        # solo recalcular si alguno cambió de posición
-        if ni in nuevos or nj in nuevos:
-            p1 = stops_nuevo.loc[ni]
-            p2 = stops_nuevo.loc[nj]
-            d = geodesic(
-                (p1.stop_lat, p1.stop_lon),
-                (p2.stop_lat, p2.stop_lon)
-            ).meters
-        else:
-            d = d_old
-    
+        
+        if representative[i] != i or representative[j] != j:
+            continue
+
         rows.extend([ni, nj])
         cols.extend([nj, ni])
         data.extend([d, d])
 
-    dist_nueva = coo_matrix( (data, (rows, cols)),
-                            shape=(len(stops_nuevo), len(stops_nuevo))
-                            ).tocsr()
-    
+    dist_nueva = coo_matrix(
+        (data, (rows, cols)),
+        shape=(len(stops_nuevo), len(stops_nuevo))
+    ).tocsr()
+
     return stops_nuevo, dist_nueva, True
 
 
@@ -195,28 +233,35 @@ while True:
     if not cambio:
         break
 
+stops_reducido.to_csv('stops_reducido.csv')
 save_npz("matriz_distancia_reducida.npz", dist_reducido)
 
 
 # %%
 
-subgrafo_conectividad_reducido = radius_neighbors_graph(
+conectividad_reducido = radius_neighbors_graph(
     stops_reducido[['stop_lat', 'stop_lon']], .01,
     mode='connectivity', include_self=False, n_jobs=10)
+
+save_npz("conectividad_reducido.npz", conectividad_reducido)
 
 
 # %% Clustering Reducido
 
-dist_sparse = load_npz("matriz_distancia_reducida.npz")
-clustering = AgglomerativeClustering(n_clusters=None, distance_threshold=500, 
-                        metric='precomputed', connectivity=subgrafo_conectividad_reducido,
-                        linkage='complete').fit(dist_sparse.toarray())
+conectividad_reducido = load_npz("matriz_distancia_reducida.npz")
+dist_reducido = load_npz("matriz_distancia_reducida.npz")
+
+
+clustering = AgglomerativeClustering(
+                n_clusters=None,
+                distance_threshold=500, 
+                metric='precomputed',
+                connectivity=conectividad_reducido,
+                linkage='complete'
+            ).fit(dist_reducido.toarray())
 
 
 fig = px.scatter_map(stops_reducido, lat="stop_lat", lon="stop_lon", zoom=10,
                      color=clustering.labels_)
 fig.show()
-
-
-
 
