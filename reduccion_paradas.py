@@ -264,7 +264,7 @@ dist_expanded[dist_expanded==0] = 1e10
 
 clustering = AgglomerativeClustering(
                 n_clusters=None,
-                distance_threshold=800,
+                distance_threshold=500,
                 metric='precomputed',
                 connectivity=conectividad_reducido,
                 linkage='complete',
@@ -285,8 +285,6 @@ fig = px.scatter_map(stops_reducido, lat="stop_lat", lon="stop_lon", zoom=10,
 fig.show()
 
 # %%
-stops_reducido = pd.read_pickle('stops_reducido.pkl')
-
 cluster_to_stops = (
     stops_reducido
     .groupby("cluster")["members"]
@@ -305,6 +303,12 @@ routes_per_stop = (
     .apply(lambda x: list(set(route_of_trip_dict[tid] for tid in x)))
 )
 
+trips_per_stop = (
+    stop_times[['trip_id', 'stop_id']]
+    .groupby("stop_id")["trip_id"]
+    .apply(lambda x: list(set(x)))
+)
+
 # %%
 cluster_to_routes = cluster_to_stops.apply(
     lambda stops: list(set(
@@ -314,7 +318,16 @@ cluster_to_routes = cluster_to_stops.apply(
     ))
 )
 
+cluster_to_trips = cluster_to_stops.apply(
+    lambda stops: list(set(
+        trip 
+        for stop_id in stops 
+        for trip in trips_per_stop.get(stop_id, [])
+    ))
+)
+
 cant_routes_per_cluster = [len(x) for x in cluster_to_routes]
+cant_trips_per_cluster = [len(x) for x in cluster_to_trips]
 
 cluster_centroides = (
     stops_reducido
@@ -326,31 +339,20 @@ cluster_centroides = (
     .rename(columns={'stop_lat': 'centroid_lat', 'stop_lon': 'centroid_lon'})   
 )
 
+# %%
 fig = px.scatter_map(cluster_centroides, lat="centroid_lat", lon="centroid_lon",
                      zoom=10, color=cant_routes_per_cluster,
                      size=cant_routes_per_cluster, hover_name=cluster_centroides.index)
 fig.show()
 
-# %% Cluster 76 - Anómalo
-
-paradas_cluster_76 = stops_completo[stops_completo['stop_id'].isin(cluster_to_stops[76])]
-
-fig = px.scatter_map(paradas_cluster_76 , lat="stop_lat", lon="stop_lon",
-                     zoom=10)
-fig.show()
-
 # %%
 
-fig = px.scatter_map(stops_reducido, lat="stop_lat", lon="stop_lon",
-                     zoom=10)
+fig = px.scatter_map(cluster_centroides, lat="centroid_lat", lon="centroid_lon",
+                     zoom=10, color=cant_trips_per_cluster,
+                     size=cant_trips_per_cluster, hover_name=cluster_centroides.index)
 fig.show()
 
-for i, grupo in stops_reducido.iterrows(): 
-    for m in grupo["members"]:
-        if m in cluster_to_stops[76]:
-            print(grupo)
 
 
-paradas_cluster_76_reducido = stops_reducido[stops_reducido['members'].any().isin(cluster_to_stops[76])]
-
+# %% 
 
