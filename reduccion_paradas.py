@@ -249,7 +249,7 @@ save_npz("matriz_distancia_reducida.npz", dist_reducido)
 # %%
 
 conectividad_reducido = radius_neighbors_graph(
-    stops_reducido[['stop_lat', 'stop_lon']], .01,
+    stops_reducido[['stop_lat', 'stop_lon']], .1,
     mode='connectivity', include_self=False, n_jobs=10)
 
 save_npz("conectividad_reducido.npz", conectividad_reducido)
@@ -262,26 +262,76 @@ save_npz("conectividad_reducido.npz", conectividad_reducido)
 dist_expanded = dist_reducido.toarray()
 dist_expanded[dist_expanded==0] = 1e10
 
-clustering = AgglomerativeClustering(
-                n_clusters=None,
-                distance_threshold=500,
-                metric='precomputed',
-                connectivity=conectividad_reducido,
-                linkage='complete',
-                compute_full_tree=True
-            ).fit(dist_expanded)
+for dist_threshold in [1500, 2000,2500,5000]:
+    print(dist_threshold)
+    
+    clustering = AgglomerativeClustering(
+                    n_clusters=None,
+                    distance_threshold=dist_threshold,
+                    metric='precomputed',
+                    connectivity=conectividad_reducido,
+                    linkage='complete',
+                    compute_full_tree=True
+                ).fit(dist_expanded)
+
+    stops_reducido[f"cluster{dist_threshold}"] = clustering.labels_
 
 # %%
 
-stops_reducido["cluster"] = clustering.labels_
 stops_reducido["members"] = stops_reducido["members"].apply(
     lambda x: [int(m) for m in x]
 )
 stops_reducido.to_pickle('stops_reducido.pkl')
 
 
+
+# for dist_threshold in [300,500,800,1000,1500,2500,5000]:
 fig = px.scatter_map(stops_reducido, lat="stop_lat", lon="stop_lon", zoom=10,
-                     color="cluster")
+                     color=f"cluster1500")
+fig.show()
+# %%
+
+distancias = [300,500,800,1000]
+
+fig = go.Figure()
+
+for i, dist_threshold in enumerate(distancias):
+    fig.add_trace(go.Scattermap(
+        lat=stops_reducido['stop_lat'],
+        lon=stops_reducido['stop_lon'],
+        visible=(i == 0), 
+        mode="markers",
+        marker=dict(
+            color=stops_reducido[f"cluster{dist_threshold}"],
+            colorscale="Inferno",
+            colorbar=dict(title=f"cluster{dist_threshold}"),
+            size=6
+        ),
+        showlegend=False
+        ))
+
+fig.update_layout(
+    mapbox=dict(
+        style="carto-positron",
+        center=dict(lat=-34.6, lon=-58.4),
+        zoom=10
+    ),
+    updatemenus=[
+    dict(
+        buttons=[
+            dict(
+                label=str(dist),
+                method="update",
+                args=[{
+                    "visible": [i == j for j in range(len(distancias))]
+                }]
+            )
+            for i, dist in enumerate(distancias)
+        ],
+        direction="down"
+    )]
+)
+
 fig.show()
 
 # %%
