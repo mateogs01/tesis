@@ -1,3 +1,7 @@
+"""
+Archivo deprecado. Lo conservo para terminar de pasar lo que hice.
+"""
+
 # Imports
 
 from concurrent.futures import ProcessPoolExecutor
